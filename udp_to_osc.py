@@ -1,10 +1,11 @@
+import time
 import socket
 import struct
 from pythonosc.udp_client import SimpleUDPClient
 
 # Configurations
 FACETRACKER_IP = "127.0.0.1"  # IP where the facetracker sends data
-FACETRACKER_PORT = 5005       # Port where the facetracker sends data
+FACETRACKER_PORT = 11573       # Port where the facetracker sends data
 UNITY_IP = "127.0.0.1"        # IP to send OSC messages to Unity
 UNITY_PORT = 7000             # Port to send OSC messages to Unity
 
@@ -16,11 +17,38 @@ osc_client = SimpleUDPClient(UNITY_IP, UNITY_PORT)
 print(f"Listening for facetracker data on {FACETRACKER_IP}:{FACETRACKER_PORT}")
 print(f"Sending OSC messages to {UNITY_IP}:{UNITY_PORT}")
 
+# Buffer for debug data
+debug_buffer = []
+max_buffer_size = 10  # Maximum number of records to store
+print_interval = 10  # Seconds between prints
+last_print_time = time.time()
+
+
+def normalize_angle(angle):
+    # Normalize from [-180, 180] to [-1, 1]
+    return angle / 180.0
+
+
+def buffer_euler_data(raw_euler, normalized_euler):
+    global debug_buffer
+    if len(debug_buffer) >= max_buffer_size:
+        debug_buffer.pop(0)  # Remove the oldest entry
+    debug_buffer.append((raw_euler, normalized_euler))
+
+
+def print_debug_buffer():
+    global debug_buffer
+    print("---- Buffered Euler Data ----")
+    for i, (raw, norm) in enumerate(debug_buffer):
+        print(f"[{i}] Normalized Euler: {norm}")
+    print("---- End of Buffered Data ----")
+
+
 while True:
     try:
         # Receive raw data from facetracker
         data, addr = udp_socket.recvfrom(4096)  # Adjust buffer size if needed
-        
+
         # Decode only the relevant fields
         offset = 0
 
@@ -28,12 +56,24 @@ while True:
         timestamp = struct.unpack_from("<d", data, offset)[0]  # 8 bytes
         offset += 8
 
-        # Skip Face ID
-        offset += 4  # 4 bytes
+        # Face ID (4 bytes) - Skip
+        offset += 4
 
-        # Skip Resolution (Width and Height)
-        offset += 4  # Width (4 bytes)
-        offset += 4  # Height (4 bytes)
+        # Resolution (Width and Height - 4 bytes each) - Skip
+        offset += 4  # Width
+        offset += 4  # Height
+
+        # Eye Blink (4 bytes each) - Skip
+        offset += 8
+
+        # Success Flag (1 byte) - Skip
+        offset += 1
+
+        # PnP Error (4 bytes) - Skip
+        offset += 4
+
+        # Quaternion (4 bytes each) - Skip
+        offset += 16
 
         # Decode Euler angles for direction
         euler_x = struct.unpack_from("<f", data, offset)[0]  # Pitch (up/down)
@@ -42,14 +82,29 @@ while True:
         offset += 4
         euler_z = struct.unpack_from("<f", data, offset)[0]  # Roll (side tilt)
         offset += 4
+        euler_x_normalized = normalize_angle(euler_x)  # Pitch
+        euler_y_normalized = normalize_angle(euler_y)  # Yaw
+        euler_z_normalized = normalize_angle(euler_z) # Roll
 
         # Send directional data to Unity
-        osc_client.send_message("/facetracker/look/up_down", euler_x)
-        osc_client.send_message("/facetracker/look/left_right", euler_y)
-        osc_client.send_message("/facetracker/look/roll", euler_z)
+        osc_client.send_message("/facetracker/look/up_down", euler_x_normalized)
+        osc_client.send_message("/facetracker/look/left_right", euler_y_normalized)
+        osc_client.send_message("/facetracker/look/roll", euler_z_normalized)
 
-        # Debug output
-        print(f"Timestamp: {timestamp}, Euler: [Up/Down: {euler_x}, Left/Right: {euler_y}, Roll: {euler_z}]")
+        # Add to debug buffer
+        buffer_euler_data(
+            raw_euler=[euler_x, euler_y, euler_z],
+            normalized_euler=[euler_x_normalized, euler_y_normalized, euler_z_normalized]
+        )
+
+        # Check if it's time to print the buffer
+        current_time = time.time()
+        if current_time - last_print_time >= print_interval:
+            print_debug_buffer()
+            last_print_time = current_time
+
+        # Translation (4 bytes each) - Skip
+        offset += 12
 
     except KeyboardInterrupt:
         print("Exiting...")
