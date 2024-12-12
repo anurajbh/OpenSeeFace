@@ -22,12 +22,16 @@ debug_buffer = []
 max_buffer_size = 10  # Maximum number of records to store
 print_interval = 10  # Seconds between prints
 last_print_time = time.time()
+message_count = 0
 
+# Time-based throttling
+target_messages_per_second = 25  # Desired message rate
+min_time_between_messages = 1 / target_messages_per_second
+last_message_time = time.time()
 
 def normalize_angle(angle):
     # Normalize from [-180, 180] to [-1, 1]
     return angle / 180.0
-
 
 def buffer_euler_data(raw_euler, normalized_euler):
     global debug_buffer
@@ -35,14 +39,13 @@ def buffer_euler_data(raw_euler, normalized_euler):
         debug_buffer.pop(0)  # Remove the oldest entry
     debug_buffer.append((raw_euler, normalized_euler))
 
-
-def print_debug_buffer():
+def print_debug_buffer(elapsed_time):
     global debug_buffer
     print("---- Buffered Euler Data ----")
     for i, (raw, norm) in enumerate(debug_buffer):
         print(f"[{i}] Normalized Euler: {norm}")
     print("---- End of Buffered Data ----")
-
+    print(f"OSC messages sent per second: {message_count / elapsed_time:.2f}")
 
 while True:
     try:
@@ -84,24 +87,32 @@ while True:
         offset += 4
         euler_x_normalized = normalize_angle(euler_x)  # Pitch
         euler_y_normalized = normalize_angle(euler_y)  # Yaw
-        euler_z_normalized = normalize_angle(euler_z) # Roll
+        euler_z_normalized = normalize_angle(euler_z)  # Roll
 
-        # Send directional data to Unity
-        osc_client.send_message("/facetracker/look/up_down", euler_x_normalized)
-        osc_client.send_message("/facetracker/look/left_right", euler_y_normalized)
-        osc_client.send_message("/facetracker/look/roll", euler_z_normalized)
+        # Time-based throttling
+        current_time = time.time()
+        if current_time - last_message_time >= min_time_between_messages:
+            # Send directional data to Unity
+            osc_client.send_message("/facetracker/look/up_down", euler_x_normalized)
+            osc_client.send_message("/facetracker/look/left_right", euler_y_normalized)
+            osc_client.send_message("/facetracker/look/roll", euler_z_normalized)
 
-        # Add to debug buffer
-        buffer_euler_data(
-            raw_euler=[euler_x, euler_y, euler_z],
-            normalized_euler=[euler_x_normalized, euler_y_normalized, euler_z_normalized]
-        )
+            last_message_time = current_time
+            message_count += 1
+
+            # Add to debug buffer
+            buffer_euler_data(
+                raw_euler=[euler_x, euler_y, euler_z],
+                normalized_euler=[euler_x_normalized, euler_y_normalized, euler_z_normalized]
+            )
 
         # Check if it's time to print the buffer
-        current_time = time.time()
         if current_time - last_print_time >= print_interval:
-            print_debug_buffer()
+            elapsed_time = current_time - last_print_time
+            print_debug_buffer(elapsed_time)
             last_print_time = current_time
+            # print(f"OSC messages sent per second: {message_count}")
+            message_count = 0
 
         # Translation (4 bytes each) - Skip
         offset += 12
